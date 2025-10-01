@@ -1,0 +1,66 @@
+<div class="container">
+    <h2>PDF Signer</h2>
+
+    <div class="upload-section">
+      <label>Upload PDF:</label>
+      <input type="file" (change)="onFileSelected($event)" accept="application/pdf" />
+    </div>
+
+    <div *ngIf="pdfSrc && totalPages > 1" class="page-selector">
+        <label>Select Page:</label>
+        <select [(ngModel)]="sigPage">
+          <option *ngFor="let p of pageNumbers" [value]="p">{{p}}</option>
+        </select>
+      </div>
+
+    <div #pdfContainer *ngIf="pdfSrc" class="pdf-container">
+      <pdf-viewer
+        [src]="pdfSrc"
+        [render-text]="true"
+        [page]="sigPage"
+        [show-all]="true"
+        (after-load-complete)="onPdfLoad($event)">
+      </pdf-viewer>
+
+      <!-- Draggable signature -->
+      <img *ngIf="signatureDisplayUrl"
+           [src]="signatureDisplayUrl"
+           class="signature"
+           [ngStyle]="{
+             'left.px':sigPosX,
+             'top.px':sigPosY,
+             'width.px':sigWidth,
+             'height.px':sigHeight
+           }"
+           (mousedown)="startDrag($event)"
+           (touchstart)="startDrag($event)" />
+
+      <!-- Resize handle -->
+      <div *ngIf="signatureDisplayUrl"
+           class="resize-handle"
+           (mousedown)="startResize($event)"
+           (touchstart)="startResize($event)"
+           [ngStyle]="{
+             'left.px':sigPosX + sigWidth - 12,
+             'top.px':sigPosY + sigHeight - 12
+           }">
+      </div>
+    </div>
+
+    <!-- Signature Options -->
+    <div *ngIf="pdfSrc" class="signature-section">
+      <h3>Draw Signature</h3>
+      <canvas #sigPad width="400" height="150" class="signature-canvas"></canvas>
+      <div class="button-group">
+        <button (click)="clearSignature()">Clear Canvas</button>
+        <button (click)="useCanvasSignature()">Use This Signature</button>
+      </div>
+
+      <h3>Or Upload Signature</h3>
+      <input type="file" accept="image/*" (change)="onSignatureUpload($event)" />
+    </div>
+        
+    <div *ngIf="pdfSrc" class="download-btn">
+        <button (click)="applySignature()">Apply & Download PDF</button>
+    </div>
+  </div>
