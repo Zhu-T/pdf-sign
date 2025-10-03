@@ -1,109 +1,86 @@
 .container {
-    max-width: 900px;
-    margin: 30px auto;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    color: #333;
-  }
-  
-  h2 {
-    text-align: center;
-    margin-bottom: 20px;
-    font-weight: 600;
-  }
-  
-  .upload-section,
-  .signature-section,
-  .page-selector,
-  .download-btn {
-    margin-top: 20px;
-  }
-  
-  .upload-section input,
-  .signature-section input,
-  .page-selector select {
-    padding: 6px 10px;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    font-size: 14px;
-  }
-  
-  .pdf-container {
-    position: relative;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    background: #f7f8fa;
-    height: 80vh;
-    overflow: auto;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-  }
-  
-  .pdf-container pdf-viewer {
-    width: 100%;
-    min-height: 100%;
-  }
-  
-  .signature {
-    position: absolute;
-    cursor: grab;
-    border: 2px dashed #0d6efd; /* blue dashed outline like your screenshot */
-    border-radius: 4px;
-  }
-  
-  .signature:active {
-    cursor: grabbing;
-  }
-  
-  .resize-handle {
-    position: absolute;
-    width: 12px;
-    height: 12px;
-    background: #0d6efd;
-    cursor: nwse-resize;
-    border-radius: 2px;
-  }
-  
-  .signature-canvas {
-    border: 1px solid #aaa;
-    border-radius: 4px;
-    background: white;
-  }
-  
-  .button-group button,
-  .download-btn button {
-    margin-top: 10px;
-    margin-right: 10px;
-    padding: 6px 14px;
-    font-size: 14px;
-    font-weight: 500;
-    border-radius: 6px;
-    border: none;
-    cursor: pointer;
-    transition: background 0.2s ease;
-  }
-  
-  .button-group button {
-    background: #0d6efd;
-    color: white;
-  }
-  
-  .button-group button:hover {
-    background: #0b5ed7;
-  }
-  
-  .download-btn button {
-    background: #198754;
-    color: white;
-  }
-  
-  .download-btn button:hover {
-    background: #146c43;
-  }
-  
-  .page-selector select {
-    margin-left: 8px;
-    min-width: 50px;
-  }
-  
+  display: flex;
+  height: 100vh;
+  background: #f8f9fb;
+  color: #333;
+  font-family: Arial, sans-serif;
+}
+
+/* Left Panel */
+.left-panel {
+  flex: 1;
+  padding: 20px;
+  border-right: 2px solid #e0e0e0;
+  background: #fff;
+  overflow-y: auto;
+}
+
+.label {
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.page-selector select {
+  padding: 6px 10px;
+  margin-top: 6px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  background: #f9f9f9;
+}
+
+.divider {
+  margin: 20px 0;
+  border: none;
+  border-top: 2px solid #eee;
+}
+
+.signature-canvas {
+  border: 2px dashed #bbb;
+  margin-bottom: 10px;
+  width: 100%;
+  max-width: 400px;
+}
+
+.button-group {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.3s;
+}
+
+.btn:hover { opacity: 0.9; }
+.btn-primary { background: #007bff; color: white; }
+.btn-success { background: #28a745; color: white; }
+
+/* Right Panel */
+.pdf-container {
+  flex: 2;
+  position: relative;
+  background: #fafafa;
+  padding: 10px;
+  overflow: auto;
+}
+
+.signature {
+  position: absolute;
+  cursor: move;
+  border: 1px dashed #444;
+  background: transparent;
+}
+
+.resize-handle {
+  width: 12px;
+  height: 12px;
+  background: #444;
+  position: absolute;
+  cursor: se-resize;
+  border-radius: 50%;
+}

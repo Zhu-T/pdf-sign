@@ -8,7 +8,7 @@ import SignaturePad from 'signature_pad';
 @Component({
   selector: 'app-pdf-signer',
   standalone: true,
-  imports: [SharedModule, FormsModule],   // ✅ just bring in SharedModule
+  imports: [SharedModule, FormsModule],
   templateUrl: './pdf-signer.html',
   styleUrls: ['./pdf-signer.css']
 })
@@ -26,8 +26,8 @@ export class PdfSigner implements AfterViewInit {
   signatureDataUrl: string | null = null;
   signatureDisplayUrl: string | null = null;
 
-  sigPosX = 50;
-  sigPosY = 50;
+  sigPosX = 0;
+  sigPosY = 0;
   sigWidth = 150;
   sigHeight = 75;
   sigPage = 1;
@@ -44,9 +44,6 @@ export class PdfSigner implements AfterViewInit {
   private resizeStartY = 0;
   private startWidth = 0;
   private startHeight = 0;
-
-  // Zoom factor
-  pdfScale?: number;
 
   ngAfterViewInit() {
     document.addEventListener('mousemove', e => this.onDrag(e));
@@ -79,8 +76,7 @@ export class PdfSigner implements AfterViewInit {
     this.signatureDataUrl = this.signaturePad.toDataURL('image/png');
     this.signatureDisplayUrl = this.signatureDataUrl;
 
-    this.sigPosX = 50;
-    this.sigPosY = 50;
+    this.centerSignature();
   }
 
   onSignatureUpload(event: Event) {
@@ -104,18 +100,14 @@ export class PdfSigner implements AfterViewInit {
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const data = imageData.data;
             for (let i = 0; i < data.length; i += 4) {
-              const r = data[i], g = data[i + 1], b = data[i + 2];
-              if (r > 240 && g > 240 && b > 240) {
-                data[i + 3] = 0;
-              }
+              if (data[i] > 240 && data[i+1] > 240 && data[i+2] > 240) data[i+3] = 0;
             }
             ctx.putImageData(imageData, 0, 0);
 
             this.signatureDataUrl = canvas.toDataURL('image/png');
             this.signatureDisplayUrl = this.signatureDataUrl;
 
-            this.sigPosX = 50;
-            this.sigPosY = 50;
+            this.centerSignature();
           }
         };
         img.src = reader.result as string;
@@ -124,24 +116,32 @@ export class PdfSigner implements AfterViewInit {
     reader.readAsDataURL(file);
   }
 
+  /** Center signature on current page */
+  centerSignature() {
+    if (!this.pdfContainer) return;
+    const pageElements = this.pdfContainer.nativeElement.querySelectorAll('.page');
+    const pageElement = pageElements[this.sigPage - 1] as HTMLElement;
+    if (!pageElement) return;
+
+    this.sigPosX = (pageElement.clientWidth - this.sigWidth) / 2;
+    this.sigPosY = (pageElement.clientHeight - this.sigHeight) / 2;
+  }
+
   startDrag(event: MouseEvent | TouchEvent) {
     event.preventDefault();
     this.dragging = true;
 
     let clientX = 0, clientY = 0;
-    if (event instanceof MouseEvent) {
-      clientX = event.clientX;
-      clientY = event.clientY;
-    } else if (event instanceof TouchEvent) {
-      clientX = event.touches[0].clientX;
-      clientY = event.touches[0].clientY;
-    }
+    if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
+    else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
 
-    const containerRect = this.pdfContainer?.nativeElement.getBoundingClientRect();
-    if (containerRect) {
-      this.dragOffsetX = clientX - containerRect.left - this.sigPosX;
-      this.dragOffsetY = clientY - containerRect.top - this.sigPosY;
-    }
+    const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
+    const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
+    if (!pageElement) return;
+
+    const pageRect = pageElement.getBoundingClientRect();
+    this.dragOffsetX = clientX - pageRect.left - this.sigPosX;
+    this.dragOffsetY = clientY - pageRect.top - this.sigPosY;
   }
 
   startResize(event: MouseEvent | TouchEvent) {
@@ -150,13 +150,8 @@ export class PdfSigner implements AfterViewInit {
     this.resizing = true;
 
     let clientX = 0, clientY = 0;
-    if (event instanceof MouseEvent) {
-      clientX = event.clientX;
-      clientY = event.clientY;
-    } else if (event instanceof TouchEvent) {
-      clientX = event.touches[0].clientX;
-      clientY = event.touches[0].clientY;
-    }
+    if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
+    else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
 
     this.resizeStartX = clientX;
     this.resizeStartY = clientY;
@@ -165,50 +160,30 @@ export class PdfSigner implements AfterViewInit {
   }
 
   onDrag(event: MouseEvent | TouchEvent) {
-    if (!this.pdfContainer) return;
+    if (!this.dragging && !this.resizing) return;
 
-    let clientX = 0, clientY = 0;
-    if (event instanceof MouseEvent) {
-      clientX = event.clientX;
-      clientY = event.clientY;
-    } else if (event instanceof TouchEvent) {
-      clientX = event.touches[0].clientX;
-      clientY = event.touches[0].clientY;
-    }
+    const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
+    const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
+    if (!pageElement) return;
 
-    const container = this.pdfContainer.nativeElement;
-    const containerRect = container.getBoundingClientRect();
-    const pageElements = container.querySelectorAll('.page');
-    const pageElement = pageElements[this.sigPage - 1] as HTMLElement;
     const pageRect = pageElement.getBoundingClientRect();
 
+    let clientX = 0, clientY = 0;
+    if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
+    else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
+
     if (this.dragging) {
-      let newX = clientX - containerRect.left - this.dragOffsetX;
-      let newY = clientY - containerRect.top - this.dragOffsetY;
+      let newX = clientX - pageRect.left - this.dragOffsetX;
+      let newY = clientY - pageRect.top - this.dragOffsetY;
 
-      // Clamp to page bounds
-      const minX = pageRect.left - containerRect.left;
-      const minY = pageRect.top - containerRect.top;
-      const maxX = minX + pageRect.width - this.sigWidth;
-      const maxY = minY + pageRect.height - this.sigHeight;
-
-      this.sigPosX = Math.min(Math.max(newX, minX), maxX);
-      this.sigPosY = Math.min(Math.max(newY, minY), maxY);
+      this.sigPosX = Math.min(Math.max(newX, 0), pageRect.width - this.sigWidth);
+      this.sigPosY = Math.min(Math.max(newY, 0), pageRect.height - this.sigHeight);
     } else if (this.resizing) {
       let deltaX = clientX - this.resizeStartX;
       let deltaY = clientY - this.resizeStartY;
 
-      this.sigWidth = Math.max(20, this.startWidth + deltaX);
-      this.sigHeight = Math.max(20, this.startHeight + deltaY);
-
-      // Constrain to page bounds
-      const minX = pageRect.left - containerRect.left;
-      const minY = pageRect.top - containerRect.top;
-      const maxWidth = pageRect.width - (this.sigPosX - minX);
-      const maxHeight = pageRect.height - (this.sigPosY - minY);
-
-      this.sigWidth = Math.min(this.sigWidth, maxWidth);
-      this.sigHeight = Math.min(this.sigHeight, maxHeight);
+      this.sigWidth = Math.min(Math.max(20, this.startWidth + deltaX), pageRect.width - this.sigPosX);
+      this.sigHeight = Math.min(Math.max(20, this.startHeight + deltaY), pageRect.height - this.sigPosY);
     }
   }
 
@@ -220,35 +195,33 @@ export class PdfSigner implements AfterViewInit {
   async onPdfLoad(pdf: PDFDocumentProxy) {
     this.totalPages = pdf.numPages;
     this.pageNumbers = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
-  
-    const page = await pdf.getPage(1); // async
-    const viewport = page.getViewport({ scale: 1 });
-    this.pdfScale = viewport.scale; // now it's a number
+
+    // center signature after load
+    setTimeout(() => this.centerSignature(), 300);
   }
 
   async applySignature() {
-    if (!this.pdfBytes) return;
+    if (!this.pdfBytes || !this.signatureDataUrl) return alert('Please draw or upload a signature!');
     const pdfDoc = await PDFDocument.load(this.pdfBytes);
     const pages = pdfDoc.getPages();
-    const page = pages[0]; // always use the first page
-  
-    if (!this.signatureDataUrl) return alert('Please draw or upload a signature!');
+    const page = pages[this.sigPage - 1];
+
     const pngImage = await pdfDoc.embedPng(this.signatureDataUrl);
-  
-    const container = this.pdfContainer?.nativeElement;
-    const containerWidth = container?.clientWidth || page.getWidth();
-    const containerHeight = container?.clientHeight || page.getHeight();
-  
-    const scaleX = page.getWidth() / containerWidth;
-    const scaleY = page.getHeight() / containerHeight;
-  
+
+    const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
+    const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
+    if (!pageElement) return;
+
+    const scaleX = page.getWidth() / pageElement.clientWidth;
+    const scaleY = page.getHeight() / pageElement.clientHeight;
+
     page.drawImage(pngImage, {
       x: this.sigPosX * scaleX,
       y: page.getHeight() - (this.sigPosY + this.sigHeight) * scaleY,
       width: this.sigWidth * scaleX,
       height: this.sigHeight * scaleY,
     });
-  
+
     const signedPdfBytes = await pdfDoc.save();
     this.downloadPdf(signedPdfBytes);
   }
