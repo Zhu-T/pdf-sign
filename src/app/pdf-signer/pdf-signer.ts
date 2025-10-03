@@ -45,6 +45,7 @@ export class PdfSigner implements AfterViewInit {
   private startWidth = 0;
   private startHeight = 0;
 
+  private file_name = 'document.pdf';
   ngAfterViewInit() {
     document.addEventListener('mousemove', e => this.onDrag(e));
     document.addEventListener('mouseup', e => this.stopDrag(e));
@@ -57,6 +58,7 @@ export class PdfSigner implements AfterViewInit {
     if (!input.files?.length) return;
 
     const file = input.files[0];
+    this.file_name = file.name;
     if (this.pdfSrc) URL.revokeObjectURL(this.pdfSrc);
     this.pdfSrc = URL.createObjectURL(file);
 
@@ -201,37 +203,56 @@ export class PdfSigner implements AfterViewInit {
   }
 
   async applySignature() {
-    if (!this.pdfBytes || !this.signatureDataUrl) return alert('Please draw or upload a signature!');
+    if (!this.pdfBytes || !this.signatureDataUrl) {
+      return alert('Please draw or upload a signature!');
+    }
+  
+    // Load PDF
     const pdfDoc = await PDFDocument.load(this.pdfBytes);
     const pages = pdfDoc.getPages();
     const page = pages[this.sigPage - 1];
-
+  
+    // Embed signature image
     const pngImage = await pdfDoc.embedPng(this.signatureDataUrl);
-
+  
+    // Get the corresponding page element in the viewer
     const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
     const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
-    if (!pageElement) return;
-
-    const scaleX = page.getWidth() / pageElement.clientWidth;
-    const scaleY = page.getHeight() / pageElement.clientHeight;
-
+    if (!pageElement) return alert('PDF page element not found!');
+  
+    // Get the page's actual rendered size and position
+    const pageRect = pageElement.getBoundingClientRect();
+    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
+  
+    // Compute scale between PDF units and rendered pixels
+    const scaleX = page.getWidth() / pageRect.width;
+    const scaleY = page.getHeight() / pageRect.height;
+  
+    // Adjust for signature position relative to the page
+    const x = (this.sigPosX - pageRect.left + containerRect.left) * scaleX;
+    const y = page.getHeight() - ((this.sigPosY - pageRect.top + containerRect.top) + this.sigHeight) * scaleY;
+  
+    // Draw the signature
     page.drawImage(pngImage, {
-      x: this.sigPosX * scaleX,
-      y: page.getHeight() - (this.sigPosY + this.sigHeight) * scaleY,
+      x,
+      y,
       width: this.sigWidth * scaleX,
       height: this.sigHeight * scaleY,
     });
-
+  
+    // Save and download
     const signedPdfBytes = await pdfDoc.save();
     this.downloadPdf(signedPdfBytes);
   }
+  
 
   downloadPdf(bytes: Uint8Array) {
     const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'signed.pdf';
+    const baseName = this.file_name.replace(/\.pdf$/i, '');
+    a.download = `${baseName}-signed.pdf`;
     a.click();
     URL.revokeObjectURL(url);
   }
