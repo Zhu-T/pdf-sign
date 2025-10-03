@@ -142,8 +142,19 @@ export class PdfSigner implements AfterViewInit {
     if (!pageElement) return;
 
     const pageRect = pageElement.getBoundingClientRect();
-    this.dragOffsetX = clientX - pageRect.left - this.sigPosX;
-    this.dragOffsetY = clientY - pageRect.top - this.sigPosY;
+    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
+
+    // Calculate the drag offset (distance from click to signature's top-left corner)
+    // The client coordinates (clientX, clientY) are absolute screen positions.
+    // The signature position (sigPosX, sigPosY) is relative to the container.
+    
+    // We calculate dragOffsetX/Y using the signature's current position relative to the PAGE.
+    const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
+    const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
+
+    // Calculate the offset from the click point to the signature's page-relative top-left corner
+    this.dragOffsetX = clientX - pageRect.left - sigX_PageRelative;
+    this.dragOffsetY = clientY - pageRect.top - sigY_PageRelative;
   }
 
   startResize(event: MouseEvent | TouchEvent) {
@@ -169,23 +180,44 @@ export class PdfSigner implements AfterViewInit {
     if (!pageElement) return;
 
     const pageRect = pageElement.getBoundingClientRect();
+    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect(); // CRITICAL: Get container boundaries
 
     let clientX = 0, clientY = 0;
     if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
     else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
 
     if (this.dragging) {
-      let newX = clientX - pageRect.left - this.dragOffsetX;
-      let newY = clientY - pageRect.top - this.dragOffsetY;
+        // 1. Calculate the new position relative to the page's top-left corner
+        let newX_PageRelative = clientX - pageRect.left - this.dragOffsetX;
+        let newY_PageRelative = clientY - pageRect.top - this.dragOffsetY;
 
-      this.sigPosX = Math.min(Math.max(newX, 0), pageRect.width - this.sigWidth);
-      this.sigPosY = Math.min(Math.max(newY, 0), pageRect.height - this.sigHeight);
+        // 2. Apply page boundary checks (using the Page Relative position)
+        const boundedX_PageRelative = Math.min(Math.max(newX_PageRelative, 0), pageRect.width - this.sigWidth);
+        const boundedY_PageRelative = Math.min(Math.max(newY_PageRelative, 0), pageRect.height - this.sigHeight);
+
+        // 3. Convert the bounded Page Relative position to the absolute position relative to the CONTAINER
+        this.sigPosX = boundedX_PageRelative + (pageRect.left - containerRect.left); // Add page's offset from container left
+        this.sigPosY = boundedY_PageRelative + (pageRect.top - containerRect.top);   // Add page's offset from container top
+
     } else if (this.resizing) {
-      let deltaX = clientX - this.resizeStartX;
-      let deltaY = clientY - this.resizeStartY;
+        let deltaX = clientX - this.resizeStartX;
+        let deltaY = clientY - this.resizeStartY;
 
-      this.sigWidth = Math.min(Math.max(20, this.startWidth + deltaX), pageRect.width - this.sigPosX);
-      this.sigHeight = Math.min(Math.max(20, this.startHeight + deltaY), pageRect.height - this.sigPosY);
+        // Resizing boundary logic (needs to be updated to use the page bounds correctly)
+        // Get the signature's current position relative to the page (to calculate max allowed size)
+        const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
+        const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
+
+        const MIN_SIZE = 20;
+
+        this.sigWidth = Math.min(
+            Math.max(MIN_SIZE, this.startWidth + deltaX),
+            pageRect.width - sigX_PageRelative // Right bound: page width - sig relative X
+        );
+        this.sigHeight = Math.min(
+            Math.max(MIN_SIZE, this.startHeight + deltaY),
+            pageRect.height - sigY_PageRelative // Bottom bound: page height - sig relative Y
+        );
     }
   }
 
