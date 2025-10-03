@@ -251,8 +251,7 @@ export class PdfSigner implements AfterViewInit {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const baseName = this.file_name.replace(/\.pdf$/i, '');
-    a.download = `${baseName}-signed.pdf`;
+    a.download = this.file_name;
     a.click();
     URL.revokeObjectURL(url);
   }
