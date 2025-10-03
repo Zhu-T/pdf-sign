@@ -37,33 +37,32 @@
     <pdf-viewer
       [src]="pdfSrc"
       [render-text]="true"
-      [page]="sigPage"
-      [show-all]="true"
+      [(page)]="sigPage"  [show-all]="true"
       style="display:block; width:100%; height:100%;"
       (after-load-complete)="onPdfLoad($event)">
     </pdf-viewer>
-
+  
     <ng-container *ngIf="signatureDisplayUrl">
-      <div class="page-wrapper" [style.position]="'absolute'" [style.top.px]="0" [style.left.px]="0">
-        <img [src]="signatureDisplayUrl"
-             class="signature"
-             [ngStyle]="{
-               'left.px':sigPosX,
-               'top.px':sigPosY,
-               'width.px':sigWidth,
-               'height.px':sigHeight
-             }"
-             (mousedown)="startDrag($event)"
-             (touchstart)="startDrag($event)" />
-
-        <div class="resize-handle"
-             (mousedown)="startResize($event)"
-             (touchstart)="startResize($event)"
-             [ngStyle]="{
-               'left.px':sigPosX + sigWidth,
-               'top.px':sigPosY + sigHeight
-             }">
-        </div>
+      <img [src]="signatureDisplayUrl"
+            class="signature"
+            [ngStyle]="{
+              'position': 'absolute', 
+              'left.px': sigPosX,      
+              'top.px': sigPosY,     
+              'width.px': sigWidth,
+              'height.px': sigHeight
+            }"
+            (mousedown)="startDrag($event)"
+            (touchstart)="startDrag($event)" />
+  
+      <div class="resize-handle"
+            [ngStyle]="{
+              'position': 'absolute',
+              'left.px': sigPosX + sigWidth,
+              'top.px': sigPosY + sigHeight
+            }"
+            (mousedown)="startResize($event)"
+            (touchstart)="startResize($event)">
       </div>
     </ng-container>
   </div>

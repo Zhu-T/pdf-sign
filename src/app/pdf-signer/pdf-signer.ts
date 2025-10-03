@@ -26,11 +26,30 @@ export class PdfSigner implements AfterViewInit {
   signatureDataUrl: string | null = null;
   signatureDisplayUrl: string | null = null;
 
+  // Signature Position/Size (relative to pdfContainer)
   sigPosX = 0;
   sigPosY = 0;
   sigWidth = 150;
   sigHeight = 75;
-  sigPage = 1;
+
+  // sigPage now uses a private backing field and a setter
+  private _sigPage = 1;
+
+  // Two-way bound property to track and update the currently visible page
+  get sigPage(): number {
+    return this._sigPage;
+  }
+  set sigPage(val: number) {
+    if (this._sigPage !== val) {
+      this._sigPage = val;
+      
+      // When the page changes (e.g., via scroll), move the signature overlay
+      if (this.signatureDisplayUrl) {
+        // Use a slight delay to ensure the PDF viewer has finished scrolling/rendering
+        setTimeout(() => this.centerSignature(), 50); 
+      }
+    }
+  }
 
   totalPages = 1;
   pageNumbers: number[] = [];
@@ -46,12 +65,16 @@ export class PdfSigner implements AfterViewInit {
   private startHeight = 0;
 
   private file_name = 'document.pdf';
+
   ngAfterViewInit() {
+    // Listen for mouse/touch events globally to handle dragging outside the element boundaries
     document.addEventListener('mousemove', e => this.onDrag(e));
     document.addEventListener('mouseup', e => this.stopDrag(e));
     document.addEventListener('touchmove', e => this.onDrag(e));
     document.addEventListener('touchend', e => this.stopDrag(e));
   }
+
+  // --- File/Signature Loading Methods ---
 
   async onFileSelected(event: Event) {
     const input = event.target as HTMLInputElement;
@@ -78,6 +101,7 @@ export class PdfSigner implements AfterViewInit {
     this.signatureDataUrl = this.signaturePad.toDataURL('image/png');
     this.signatureDisplayUrl = this.signatureDataUrl;
 
+    // Call the updated centering function
     this.centerSignature();
   }
 
@@ -98,7 +122,7 @@ export class PdfSigner implements AfterViewInit {
           if (ctx) {
             ctx.drawImage(img, 0, 0);
 
-            // Remove white background
+            // Simple white background removal
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const data = imageData.data;
             for (let i = 0; i < data.length; i += 4) {
@@ -109,6 +133,7 @@ export class PdfSigner implements AfterViewInit {
             this.signatureDataUrl = canvas.toDataURL('image/png');
             this.signatureDisplayUrl = this.signatureDataUrl;
 
+            // Call the updated centering function
             this.centerSignature();
           }
         };
@@ -118,15 +143,37 @@ export class PdfSigner implements AfterViewInit {
     reader.readAsDataURL(file);
   }
 
-  /** Center signature on current page */
+  // --- PDF Viewer Events ---
+
+  async onPdfLoad(pdf: PDFDocumentProxy) {
+    this.totalPages = pdf.numPages;
+    this.pageNumbers = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+
+    // Center signature after load (if one exists)
+    if (this.signatureDisplayUrl) {
+      setTimeout(() => this.centerSignature(), 300);
+    }
+  }
+
+  // --- Positioning and Drag/Resize Methods ---
+
+  /** Center signature on current page (relative to the container) */
   centerSignature() {
     if (!this.pdfContainer) return;
     const pageElements = this.pdfContainer.nativeElement.querySelectorAll('.page');
     const pageElement = pageElements[this.sigPage - 1] as HTMLElement;
     if (!pageElement) return;
 
-    this.sigPosX = (pageElement.clientWidth - this.sigWidth) / 2;
-    this.sigPosY = (pageElement.clientHeight - this.sigHeight) / 2;
+    const pageRect = pageElement.getBoundingClientRect();
+    const containerRect = this.pdfContainer.nativeElement.getBoundingClientRect();
+
+    // 1. Calculate center position relative to the page
+    const centerX_PageRelative = (pageRect.width - this.sigWidth) / 2;
+    const centerY_PageRelative = (pageRect.height - this.sigHeight) / 2;
+
+    // 2. Convert to container-relative position (required for HTML binding)
+    this.sigPosX = centerX_PageRelative + (pageRect.left - containerRect.left);
+    this.sigPosY = centerY_PageRelative + (pageRect.top - containerRect.top);
   }
 
   startDrag(event: MouseEvent | TouchEvent) {
@@ -144,15 +191,11 @@ export class PdfSigner implements AfterViewInit {
     const pageRect = pageElement.getBoundingClientRect();
     const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
 
-    // Calculate the drag offset (distance from click to signature's top-left corner)
-    // The client coordinates (clientX, clientY) are absolute screen positions.
-    // The signature position (sigPosX, sigPosY) is relative to the container.
-    
-    // We calculate dragOffsetX/Y using the signature's current position relative to the PAGE.
+    // Calculate signature position relative to the page
     const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
     const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
 
-    // Calculate the offset from the click point to the signature's page-relative top-left corner
+    // Calculate the offset from the click point to the signature's top-left corner (page-relative)
     this.dragOffsetX = clientX - pageRect.left - sigX_PageRelative;
     this.dragOffsetY = clientY - pageRect.top - sigY_PageRelative;
   }
@@ -180,44 +223,50 @@ export class PdfSigner implements AfterViewInit {
     if (!pageElement) return;
 
     const pageRect = pageElement.getBoundingClientRect();
-    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect(); // CRITICAL: Get container boundaries
+    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
 
     let clientX = 0, clientY = 0;
     if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
     else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
 
     if (this.dragging) {
-        // 1. Calculate the new position relative to the page's top-left corner
-        let newX_PageRelative = clientX - pageRect.left - this.dragOffsetX;
-        let newY_PageRelative = clientY - pageRect.top - this.dragOffsetY;
+      // 1. Calculate the new position relative to the page's top-left corner
+      let newX_PageRelative = clientX - pageRect.left - this.dragOffsetX;
+      let newY_PageRelative = clientY - pageRect.top - this.dragOffsetY;
 
-        // 2. Apply page boundary checks (using the Page Relative position)
-        const boundedX_PageRelative = Math.min(Math.max(newX_PageRelative, 0), pageRect.width - this.sigWidth);
-        const boundedY_PageRelative = Math.min(Math.max(newY_PageRelative, 0), pageRect.height - this.sigHeight);
+      // 2. Apply Page Boundary Checks (CRITICAL FOR BOUNDING)
+      const boundedX_PageRelative = Math.min(
+          Math.max(newX_PageRelative, 0),
+          pageRect.width - this.sigWidth
+      );
+      const boundedY_PageRelative = Math.min(
+          Math.max(newY_PageRelative, 0),
+          pageRect.height - this.sigHeight
+      );
 
-        // 3. Convert the bounded Page Relative position to the absolute position relative to the CONTAINER
-        this.sigPosX = boundedX_PageRelative + (pageRect.left - containerRect.left); // Add page's offset from container left
-        this.sigPosY = boundedY_PageRelative + (pageRect.top - containerRect.top);   // Add page's offset from container top
+      // 3. Convert bounded Page Relative position to Absolute Container Relative position
+      this.sigPosX = boundedX_PageRelative + (pageRect.left - containerRect.left);
+      this.sigPosY = boundedY_PageRelative + (pageRect.top - containerRect.top);
 
     } else if (this.resizing) {
-        let deltaX = clientX - this.resizeStartX;
-        let deltaY = clientY - this.resizeStartY;
+      let deltaX = clientX - this.resizeStartX;
+      let deltaY = clientY - this.resizeStartY;
 
-        // Resizing boundary logic (needs to be updated to use the page bounds correctly)
-        // Get the signature's current position relative to the page (to calculate max allowed size)
-        const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
-        const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
+      // Get the signature's current position relative to the page for bounds check
+      const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
+      const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
 
-        const MIN_SIZE = 20;
+      const MIN_SIZE = 20;
 
-        this.sigWidth = Math.min(
-            Math.max(MIN_SIZE, this.startWidth + deltaX),
-            pageRect.width - sigX_PageRelative // Right bound: page width - sig relative X
-        );
-        this.sigHeight = Math.min(
-            Math.max(MIN_SIZE, this.startHeight + deltaY),
-            pageRect.height - sigY_PageRelative // Bottom bound: page height - sig relative Y
-        );
+      // Apply Resizing Boundary Checks
+      this.sigWidth = Math.min(
+          Math.max(MIN_SIZE, this.startWidth + deltaX),
+          pageRect.width - sigX_PageRelative
+      );
+      this.sigHeight = Math.min(
+          Math.max(MIN_SIZE, this.startHeight + deltaY),
+          pageRect.height - sigY_PageRelative
+      );
     }
   }
 
@@ -226,44 +275,42 @@ export class PdfSigner implements AfterViewInit {
     this.resizing = false;
   }
 
-  async onPdfLoad(pdf: PDFDocumentProxy) {
-    this.totalPages = pdf.numPages;
-    this.pageNumbers = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
-
-    // center signature after load
-    setTimeout(() => this.centerSignature(), 300);
-  }
+  // --- Apply and Download Methods ---
 
   async applySignature() {
     if (!this.pdfBytes || !this.signatureDataUrl) {
       return alert('Please draw or upload a signature!');
     }
-  
+
     // Load PDF
     const pdfDoc = await PDFDocument.load(this.pdfBytes);
     const pages = pdfDoc.getPages();
     const page = pages[this.sigPage - 1];
-  
+
     // Embed signature image
     const pngImage = await pdfDoc.embedPng(this.signatureDataUrl);
-  
+
     // Get the corresponding page element in the viewer
     const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
     const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
     if (!pageElement) return alert('PDF page element not found!');
-  
-    // Get the page's actual rendered size and position
+
+    // Get the page's actual rendered size and container position
     const pageRect = pageElement.getBoundingClientRect();
     const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
-  
+
     // Compute scale between PDF units and rendered pixels
     const scaleX = page.getWidth() / pageRect.width;
     const scaleY = page.getHeight() / pageRect.height;
-  
-    // Adjust for signature position relative to the page
-    const x = (this.sigPosX - pageRect.left + containerRect.left) * scaleX;
-    const y = page.getHeight() - ((this.sigPosY - pageRect.top + containerRect.top) + this.sigHeight) * scaleY;
-  
+    
+    // Get signature position relative to the page
+    const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
+    const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
+
+    // Convert to PDF coordinates (Y-axis inverted, so (0,0) is bottom-left)
+    const x = sigX_PageRelative * scaleX;
+    const y = page.getHeight() - (sigY_PageRelative + this.sigHeight) * scaleY;
+
     // Draw the signature
     page.drawImage(pngImage, {
       x,
@@ -271,12 +318,11 @@ export class PdfSigner implements AfterViewInit {
       width: this.sigWidth * scaleX,
       height: this.sigHeight * scaleY,
     });
-  
+
     // Save and download
     const signedPdfBytes = await pdfDoc.save();
     this.downloadPdf(signedPdfBytes);
   }
-  
 
   downloadPdf(bytes: Uint8Array) {
     const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
