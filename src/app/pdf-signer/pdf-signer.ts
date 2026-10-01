@@ -1,336 +1,625 @@
-import { Component, ElementRef, ViewChild, AfterViewInit } from '@angular/core';
+import { Component, ElementRef, HostListener, OnDestroy, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { PDFDocumentProxy } from 'ng2-pdf-viewer';
-import { SharedModule } from '../shared/shared.module';
-import { PDFDocument } from 'pdf-lib';
-import SignaturePad from 'signature_pad';
+import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
+import {
+  DEFAULT_FONT_SIZE,
+  FIELD_DEFS,
+  FONT_STACK,
+  CHECK_POINTS,
+  Field,
+  FieldDef,
+  FieldType,
+  LINE_HEIGHT,
+  TEXT_PADDING,
+  isImageField,
+  isTextField,
+} from './fields';
+import { PageGeometry, stampFields } from './pdf-export';
+import { AdoptedMark, MarkKind, SignatureDialog } from './signature-dialog/signature-dialog';
+
+type PdfJs = typeof import('pdfjs-dist');
+
+interface Gesture {
+  kind: 'move' | 'resize';
+  field: Field;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  orig: { x: number; y: number; w: number; h: number };
+  /** Rendered page size in CSS pixels. */
+  pageW: number;
+  pageH: number;
+  moved: boolean;
+  snapshot: string;
+}
+
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
+const MIN_FIELD_PT = 8;
+/** Largest canvas we will allocate for one page, in pixels. */
+const MAX_CANVAS_PIXELS = 16_000_000;
+
+let pdfjsPromise: Promise<PdfJs> | null = null;
+function loadPdfJs(): Promise<PdfJs> {
+  pdfjsPromise ??= import('pdfjs-dist').then(pdfjs => {
+    pdfjs.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.mjs';
+    return pdfjs;
+  });
+  return pdfjsPromise;
+}
 
 @Component({
   selector: 'app-pdf-signer',
   standalone: true,
-  imports: [SharedModule, FormsModule],
+  imports: [FormsModule, SignatureDialog],
   templateUrl: './pdf-signer.html',
-  styleUrls: ['./pdf-signer.css']
+  styleUrls: ['./pdf-signer.css'],
 })
-export class PdfSigner implements AfterViewInit {
-  pdfSrc: string | null = null;
-  pdfBytes: Uint8Array | null = null;
+export class PdfSigner implements OnDestroy {
+  @ViewChild('scroller') scroller?: ElementRef<HTMLDivElement>;
 
-  @ViewChild('sigPad') set signatureCanvas(canvas: ElementRef<HTMLCanvasElement> | undefined) {
-    if (canvas) this.signaturePad = new SignaturePad(canvas.nativeElement);
+  readonly defs = FIELD_DEFS;
+  readonly fontStack = FONT_STACK;
+  readonly lineHeight = LINE_HEIGHT;
+  readonly textPadding = TEXT_PADDING;
+  readonly checkPoints = CHECK_POINTS.map(p => p.join(',')).join(' ');
+  readonly isImageField = isImageField;
+  readonly isTextField = isTextField;
+
+  fileName = '';
+  /** Displayed page sizes in PDF points. */
+  pages: { index: number; width: number; height: number }[] = [];
+  fields: Field[] = [];
+  zoom = 1;
+  tool: FieldType | null = null;
+  selectedId: number | null = null;
+  loading = false;
+  saving = false;
+  dragOver = false;
+  error = '';
+
+  signature: AdoptedMark | null = null;
+  initials: AdoptedMark | null = null;
+  fullName = '';
+  dialog: { kind: MarkKind; then?: (mark: AdoptedMark) => void } | null = null;
+
+  private pdfBytes: Uint8Array | null = null;
+  private pdfDoc: PDFDocumentProxy | null = null;
+  private pageProxies: PDFPageProxy[] = [];
+  private geometry: PageGeometry[] = [];
+  private renderTasks = new Map<number, RenderTask>();
+  private renderedZoom = new Map<number, number>();
+  private visiblePages = new Set<number>();
+  private observer?: IntersectionObserver;
+  private history: string[] = [];
+  private gesture: Gesture | null = null;
+  private nextId = 1;
+
+  ngOnDestroy() {
+    this.closeDocument();
   }
-  private signaturePad?: SignaturePad;
 
-  @ViewChild('pdfContainer', { static: false }) pdfContainer?: ElementRef<HTMLDivElement>;
-
-  signatureDataUrl: string | null = null;
-  signatureDisplayUrl: string | null = null;
-
-  // Signature Position/Size (relative to pdfContainer)
-  sigPosX = 0;
-  sigPosY = 0;
-  sigWidth = 150;
-  sigHeight = 75;
-
-  // sigPage now uses a private backing field and a setter
-  private _sigPage = 1;
-
-  // Two-way bound property to track and update the currently visible page
-  get sigPage(): number {
-    return this._sigPage;
+  get selected(): Field | undefined {
+    return this.fields.find(f => f.id === this.selectedId);
   }
-  set sigPage(val: number) {
-    if (this._sigPage !== val) {
-      this._sigPage = val;
-      
-      // When the page changes (e.g., via scroll), move the signature overlay
-      if (this.signatureDisplayUrl) {
-        // Use a slight delay to ensure the PDF viewer has finished scrolling/rendering
-        setTimeout(() => this.centerSignature(), 50); 
-      }
+
+  get canUndo(): boolean {
+    return this.history.length > 0;
+  }
+
+  get zoomPercent(): number {
+    return Math.round(this.zoom * 100);
+  }
+
+  defOf(type: FieldType): FieldDef {
+    return FIELD_DEFS.find(d => d.type === type)!;
+  }
+
+  fieldsOn(page: number): Field[] {
+    return this.fields.filter(f => f.page === page);
+  }
+
+  // --- Loading ---
+
+  onFileInput(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) this.openFile(file);
+  }
+
+  onDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    this.dragOver = true;
+  }
+
+  onDrop(event: DragEvent) {
+    event.preventDefault();
+    this.dragOver = false;
+    const file = event.dataTransfer?.files[0];
+    if (file) this.openFile(file);
+  }
+
+  async openFile(file: File) {
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+      this.error = `"${file.name}" is not a PDF.`;
+      return;
     }
-  }
+    if (this.fields.length && !confirm('Open a different PDF? Fields on the current document will be discarded.')) {
+      return;
+    }
 
-  totalPages = 1;
-  pageNumbers: number[] = [];
+    this.error = '';
+    this.loading = true;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const pdfjs = await loadPdfJs();
+      // pdf.js takes ownership of the buffer it is given, so hand it a copy.
+      const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+      const proxies = await Promise.all(
+        Array.from({ length: doc.numPages }, (_, i) => doc.getPage(i + 1)),
+      );
 
-  private dragging = false;
-  private dragOffsetX = 0;
-  private dragOffsetY = 0;
-
-  private resizing = false;
-  private resizeStartX = 0;
-  private resizeStartY = 0;
-  private startWidth = 0;
-  private startHeight = 0;
-
-  private file_name = 'document.pdf';
-
-  ngAfterViewInit() {
-    // Listen for mouse/touch events globally to handle dragging outside the element boundaries
-    document.addEventListener('mousemove', e => this.onDrag(e));
-    document.addEventListener('mouseup', e => this.stopDrag(e));
-    document.addEventListener('touchmove', e => this.onDrag(e));
-    document.addEventListener('touchend', e => this.stopDrag(e));
-  }
-
-  // --- File/Signature Loading Methods ---
-
-  async onFileSelected(event: Event) {
-    const input = event.target as HTMLInputElement;
-    if (!input.files?.length) return;
-
-    const file = input.files[0];
-    this.file_name = file.name;
-    if (this.pdfSrc) URL.revokeObjectURL(this.pdfSrc);
-    this.pdfSrc = URL.createObjectURL(file);
-
-    const buffer = await file.arrayBuffer();
-    this.pdfBytes = new Uint8Array(buffer);
-  }
-
-  clearSignature() {
-    this.signaturePad?.clear();
-    this.signatureDataUrl = null;
-    this.signatureDisplayUrl = null;
-  }
-
-  useCanvasSignature() {
-    if (!this.signaturePad || this.signaturePad.isEmpty()) return;
-
-    this.signatureDataUrl = this.signaturePad.toDataURL('image/png');
-    this.signatureDisplayUrl = this.signatureDataUrl;
-
-    // Call the updated centering function
-    this.centerSignature();
-  }
-
-  onSignatureUpload(event: Event) {
-    const input = event.target as HTMLInputElement;
-    if (!input.files?.length) return;
-
-    const file = input.files[0];
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (reader.result) {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0);
-
-            // Simple white background removal
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imageData.data;
-            for (let i = 0; i < data.length; i += 4) {
-              if (data[i] > 240 && data[i+1] > 240 && data[i+2] > 240) data[i+3] = 0;
-            }
-            ctx.putImageData(imageData, 0, 0);
-
-            this.signatureDataUrl = canvas.toDataURL('image/png');
-            this.signatureDisplayUrl = this.signatureDataUrl;
-
-            // Call the updated centering function
-            this.centerSignature();
-          }
+      this.closeDocument();
+      this.pdfDoc = doc;
+      this.pdfBytes = bytes;
+      this.pageProxies = proxies;
+      this.fileName = file.name;
+      this.geometry = proxies.map(page => {
+        const vp = page.getViewport({ scale: 1 });
+        return {
+          width: vp.width,
+          height: vp.height,
+          rotation: vp.rotation,
+          toPdfPoint: (x, y) => vp.convertToPdfPoint(x, y) as [number, number],
         };
-        img.src = reader.result as string;
-      }
-    };
-    reader.readAsDataURL(file);
-  }
+      });
+      this.pages = this.geometry.map((g, index) => ({ index, width: g.width, height: g.height }));
 
-  // --- PDF Viewer Events ---
-
-  async onPdfLoad(pdf: PDFDocumentProxy) {
-    this.totalPages = pdf.numPages;
-    this.pageNumbers = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
-
-    // Center signature after load (if one exists)
-    if (this.signatureDisplayUrl) {
-      setTimeout(() => this.centerSignature(), 300);
+      // Wait for the pages to be laid out before measuring and observing them.
+      setTimeout(() => {
+        this.fitWidth();
+        this.observePages();
+      });
+    } catch (e: any) {
+      this.error =
+        e?.name === 'PasswordException'
+          ? 'This PDF is password protected. Remove the password and try again.'
+          : `Could not open "${file.name}": ${e?.message ?? e}`;
+    } finally {
+      this.loading = false;
     }
   }
 
-  // --- Positioning and Drag/Resize Methods ---
-
-  /** Center signature on current page (relative to the container) */
-  centerSignature() {
-    if (!this.pdfContainer) return;
-    const pageElements = this.pdfContainer.nativeElement.querySelectorAll('.page');
-    const pageElement = pageElements[this.sigPage - 1] as HTMLElement;
-    if (!pageElement) return;
-
-    const pageRect = pageElement.getBoundingClientRect();
-    const containerRect = this.pdfContainer.nativeElement.getBoundingClientRect();
-
-    // 1. Calculate center position relative to the page
-    const centerX_PageRelative = (pageRect.width - this.sigWidth) / 2;
-    const centerY_PageRelative = (pageRect.height - this.sigHeight) / 2;
-
-    // 2. Convert to container-relative position (required for HTML binding)
-    this.sigPosX = centerX_PageRelative + (pageRect.left - containerRect.left);
-    this.sigPosY = centerY_PageRelative + (pageRect.top - containerRect.top);
+  private closeDocument() {
+    this.observer?.disconnect();
+    this.renderTasks.forEach(task => task.cancel());
+    this.renderTasks.clear();
+    this.renderedZoom.clear();
+    this.visiblePages.clear();
+    this.pdfDoc?.destroy();
+    this.pdfDoc = null;
+    this.pdfBytes = null;
+    this.pageProxies = [];
+    this.geometry = [];
+    this.pages = [];
+    this.fields = [];
+    this.history = [];
+    this.selectedId = null;
+    this.tool = null;
   }
 
-  startDrag(event: MouseEvent | TouchEvent) {
-    event.preventDefault();
-    this.dragging = true;
+  // --- Rendering ---
 
-    let clientX = 0, clientY = 0;
-    if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
-    else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
-
-    const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
-    const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
-    if (!pageElement) return;
-
-    const pageRect = pageElement.getBoundingClientRect();
-    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
-
-    // Calculate signature position relative to the page
-    const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
-    const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
-
-    // Calculate the offset from the click point to the signature's top-left corner (page-relative)
-    this.dragOffsetX = clientX - pageRect.left - sigX_PageRelative;
-    this.dragOffsetY = clientY - pageRect.top - sigY_PageRelative;
+  private observePages() {
+    const root = this.scroller?.nativeElement;
+    if (!root) return;
+    this.observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          const index = Number((entry.target as HTMLElement).dataset['index']);
+          if (entry.isIntersecting) {
+            this.visiblePages.add(index);
+            this.renderPage(index);
+          } else {
+            this.visiblePages.delete(index);
+          }
+        }
+      },
+      { root, rootMargin: '400px 0px' },
+    );
+    root.querySelectorAll('.page').forEach(el => this.observer!.observe(el));
   }
 
-  startResize(event: MouseEvent | TouchEvent) {
-    event.stopPropagation();
-    event.preventDefault();
-    this.resizing = true;
+  private async renderPage(index: number) {
+    const proxy = this.pageProxies[index];
+    const holder = this.scroller?.nativeElement.querySelector<HTMLElement>(`.canvas-holder[data-page="${index}"]`);
+    if (!proxy || !holder || this.renderedZoom.get(index) === this.zoom) return;
 
-    let clientX = 0, clientY = 0;
-    if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
-    else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
+    this.renderTasks.get(index)?.cancel();
+    const zoom = this.zoom;
+    const base = proxy.getViewport({ scale: 1 });
+    let scale = zoom * (window.devicePixelRatio || 1);
+    scale = Math.min(scale, Math.sqrt(MAX_CANVAS_PIXELS / (base.width * base.height)));
+    const viewport = proxy.getViewport({ scale });
 
-    this.resizeStartX = clientX;
-    this.resizeStartY = clientY;
-    this.startWidth = this.sigWidth;
-    this.startHeight = this.sigHeight;
-  }
-
-  onDrag(event: MouseEvent | TouchEvent) {
-    if (!this.dragging && !this.resizing) return;
-
-    const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
-    const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
-    if (!pageElement) return;
-
-    const pageRect = pageElement.getBoundingClientRect();
-    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
-
-    let clientX = 0, clientY = 0;
-    if (event instanceof MouseEvent) { clientX = event.clientX; clientY = event.clientY; }
-    else if (event instanceof TouchEvent) { clientX = event.touches[0].clientX; clientY = event.touches[0].clientY; }
-
-    if (this.dragging) {
-      // 1. Calculate the new position relative to the page's top-left corner
-      let newX_PageRelative = clientX - pageRect.left - this.dragOffsetX;
-      let newY_PageRelative = clientY - pageRect.top - this.dragOffsetY;
-
-      // 2. Apply Page Boundary Checks (CRITICAL FOR BOUNDING)
-      const boundedX_PageRelative = Math.min(
-          Math.max(newX_PageRelative, 0),
-          pageRect.width - this.sigWidth
-      );
-      const boundedY_PageRelative = Math.min(
-          Math.max(newY_PageRelative, 0),
-          pageRect.height - this.sigHeight
-      );
-
-      // 3. Convert bounded Page Relative position to Absolute Container Relative position
-      this.sigPosX = boundedX_PageRelative + (pageRect.left - containerRect.left);
-      this.sigPosY = boundedY_PageRelative + (pageRect.top - containerRect.top);
-
-    } else if (this.resizing) {
-      let deltaX = clientX - this.resizeStartX;
-      let deltaY = clientY - this.resizeStartY;
-
-      // Get the signature's current position relative to the page for bounds check
-      const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
-      const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
-
-      const MIN_SIZE = 20;
-
-      // Apply Resizing Boundary Checks
-      this.sigWidth = Math.min(
-          Math.max(MIN_SIZE, this.startWidth + deltaX),
-          pageRect.width - sigX_PageRelative
-      );
-      this.sigHeight = Math.min(
-          Math.max(MIN_SIZE, this.startHeight + deltaY),
-          pageRect.height - sigY_PageRelative
-      );
+    // Render off-screen and swap in when done, so zooming never flashes a blank page.
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const pdfjs = await loadPdfJs();
+    const task = proxy.render({ canvas, viewport, annotationMode: pdfjs.AnnotationMode.ENABLE });
+    this.renderTasks.set(index, task);
+    try {
+      await task.promise;
+      holder.replaceChildren(canvas);
+      this.renderedZoom.set(index, zoom);
+    } catch (e) {
+      if (!(e instanceof pdfjs.RenderingCancelledException)) console.error(e);
+    } finally {
+      if (this.renderTasks.get(index) === task) this.renderTasks.delete(index);
     }
   }
 
-  stopDrag(event: MouseEvent | TouchEvent) {
-    this.dragging = false;
-    this.resizing = false;
-  }
-
-  // --- Apply and Download Methods ---
-
-  async applySignature() {
-    if (!this.pdfBytes || !this.signatureDataUrl) {
-      return alert('Please draw or upload a signature!');
-    }
-
-    // Load PDF
-    const pdfDoc = await PDFDocument.load(this.pdfBytes);
-    const pages = pdfDoc.getPages();
-    const page = pages[this.sigPage - 1];
-
-    // Embed signature image
-    const pngImage = await pdfDoc.embedPng(this.signatureDataUrl);
-
-    // Get the corresponding page element in the viewer
-    const pageElements = this.pdfContainer?.nativeElement.querySelectorAll('.page');
-    const pageElement = pageElements![this.sigPage - 1] as HTMLElement;
-    if (!pageElement) return alert('PDF page element not found!');
-
-    // Get the page's actual rendered size and container position
-    const pageRect = pageElement.getBoundingClientRect();
-    const containerRect = this.pdfContainer!.nativeElement.getBoundingClientRect();
-
-    // Compute scale between PDF units and rendered pixels
-    const scaleX = page.getWidth() / pageRect.width;
-    const scaleY = page.getHeight() / pageRect.height;
-    
-    // Get signature position relative to the page
-    const sigX_PageRelative = this.sigPosX - (pageRect.left - containerRect.left);
-    const sigY_PageRelative = this.sigPosY - (pageRect.top - containerRect.top);
-
-    // Convert to PDF coordinates (Y-axis inverted, so (0,0) is bottom-left)
-    const x = sigX_PageRelative * scaleX;
-    const y = page.getHeight() - (sigY_PageRelative + this.sigHeight) * scaleY;
-
-    // Draw the signature
-    page.drawImage(pngImage, {
-      x,
-      y,
-      width: this.sigWidth * scaleX,
-      height: this.sigHeight * scaleY,
+  setZoom(zoom: number) {
+    zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+    if (zoom === this.zoom) return;
+    const el = this.scroller?.nativeElement;
+    const ratio = el && el.scrollHeight ? el.scrollTop / el.scrollHeight : 0;
+    this.zoom = zoom;
+    setTimeout(() => {
+      if (el) el.scrollTop = ratio * el.scrollHeight;
+      this.visiblePages.forEach(i => this.renderPage(i));
     });
-
-    // Save and download
-    const signedPdfBytes = await pdfDoc.save();
-    this.downloadPdf(signedPdfBytes);
   }
 
-  downloadPdf(bytes: Uint8Array) {
-    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = this.file_name;
-    a.click();
-    URL.revokeObjectURL(url);
+  zoomBy(factor: number) {
+    this.setZoom(Math.round(this.zoom * factor * 100) / 100);
   }
+
+  fitWidth() {
+    const el = this.scroller?.nativeElement;
+    if (!el || !this.pages.length) return;
+    const widest = Math.max(...this.pages.map(p => p.width));
+    this.setZoom(Math.min(1.5, (el.clientWidth - 48) / widest));
+    // setZoom is a no-op when the zoom is unchanged, so make sure the first pages render.
+    setTimeout(() => this.visiblePages.forEach(i => this.renderPage(i)));
+  }
+
+  // --- Placing fields ---
+
+  selectTool(type: FieldType) {
+    this.tool = this.tool === type ? null : type;
+    this.selectedId = null;
+  }
+
+  onPagePointerDown(event: PointerEvent, pageIndex: number) {
+    if (event.button !== 0) return;
+    if (!this.tool) {
+      this.selectedId = null;
+      return;
+    }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const fx = (event.clientX - rect.left) / rect.width;
+    const fy = (event.clientY - rect.top) / rect.height;
+    const type = this.tool;
+    this.tool = null;
+    event.preventDefault();
+    this.placeField(type, pageIndex, fx, fy);
+  }
+
+  private placeField(type: FieldType, page: number, cx: number, cy: number) {
+    if (isImageField(type)) {
+      const mark = this[type as MarkKind];
+      if (!mark) {
+        this.openDialog(type as MarkKind, () => this.placeField(type, page, cx, cy));
+        return;
+      }
+    }
+
+    const geo = this.geometry[page];
+    const def = this.defOf(type);
+    let wPt = def.w;
+    let hPt = def.h;
+    let value = '';
+    if (isImageField(type)) {
+      const mark = this[type as MarkKind]!;
+      ({ w: wPt, h: hPt } = fitMark(mark.aspect, def));
+      value = mark.dataUrl;
+    } else if (type === 'name') {
+      value = this.fullName;
+    } else if (type === 'date') {
+      value = new Date().toLocaleDateString();
+    }
+
+    const w = Math.min(1, wPt / geo.width);
+    const h = Math.min(1, hPt / geo.height);
+    const field: Field = {
+      id: this.nextId++,
+      type,
+      page,
+      x: clamp(cx - w / 2, 0, 1 - w),
+      y: clamp(cy - h / 2, 0, 1 - h),
+      w,
+      h,
+      value,
+      checked: type === 'checkbox',
+      fontSize: DEFAULT_FONT_SIZE,
+    };
+
+    this.pushHistory();
+    this.fields = [...this.fields, field];
+    this.selectedId = field.id;
+    if (isTextField(type)) this.focusField(field.id);
+  }
+
+  private focusField(id: number) {
+    setTimeout(() => {
+      const el = this.scroller?.nativeElement.querySelector<HTMLTextAreaElement>(`[data-field="${id}"] textarea`);
+      el?.focus();
+      el?.select();
+    });
+  }
+
+  // --- Signatures ---
+
+  openDialog(kind: MarkKind, then?: (mark: AdoptedMark) => void) {
+    this.dialog = { kind, then };
+  }
+
+  onAdopt(mark: AdoptedMark) {
+    const dialog = this.dialog;
+    if (!dialog) return;
+    this.dialog = null;
+    this[dialog.kind] = mark;
+    if (mark.name) this.fullName = mark.name;
+
+    // A newly adopted mark replaces the one already placed on the document.
+    const placed = this.fields.filter(f => f.type === dialog.kind);
+    if (placed.length) {
+      this.pushHistory();
+      for (const f of placed) {
+        const geo = this.geometry[f.page];
+        f.value = mark.dataUrl;
+        f.h = Math.min((f.w * geo.width) / mark.aspect / geo.height, 1 - f.y);
+      }
+    }
+    dialog.then?.(mark);
+  }
+
+  // --- Editing fields ---
+
+  onFieldPointerDown(event: PointerEvent, field: Field) {
+    event.stopPropagation();
+    if (event.button !== 0) return;
+    this.selectedId = field.id;
+    this.tool = null;
+    // Let text fields take focus and the caret instead of starting a drag.
+    if ((event.target as HTMLElement).tagName === 'TEXTAREA') return;
+    event.preventDefault();
+    // preventDefault keeps focus where it was, so release any text field being edited.
+    (document.activeElement as HTMLElement | null)?.blur();
+    this.startGesture(event, field, 'move');
+  }
+
+  onHandlePointerDown(event: PointerEvent, field: Field, kind: 'move' | 'resize') {
+    event.stopPropagation();
+    if (event.button !== 0) return;
+    event.preventDefault();
+    this.selectedId = field.id;
+    this.startGesture(event, field, kind);
+  }
+
+  private startGesture(event: PointerEvent, field: Field, kind: 'move' | 'resize') {
+    const pageEl = (event.target as HTMLElement).closest('.page')!;
+    const rect = pageEl.getBoundingClientRect();
+    this.gesture = {
+      kind,
+      field,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      orig: { x: field.x, y: field.y, w: field.w, h: field.h },
+      pageW: rect.width,
+      pageH: rect.height,
+      moved: false,
+      snapshot: JSON.stringify(this.fields),
+    };
+  }
+
+  @HostListener('window:pointermove', ['$event'])
+  onPointerMove(event: PointerEvent) {
+    const g = this.gesture;
+    if (!g || event.pointerId !== g.pointerId) return;
+    const dxPx = event.clientX - g.startX;
+    const dyPx = event.clientY - g.startY;
+    if (!g.moved && Math.hypot(dxPx, dyPx) < 3) return;
+    g.moved = true;
+
+    const f = g.field;
+    const dx = dxPx / g.pageW;
+    const dy = dyPx / g.pageH;
+    if (g.kind === 'move') {
+      f.x = clamp(g.orig.x + dx, 0, 1 - f.w);
+      f.y = clamp(g.orig.y + dy, 0, 1 - f.h);
+      return;
+    }
+
+    const geo = this.geometry[f.page];
+    const minW = MIN_FIELD_PT / geo.width;
+    const minH = MIN_FIELD_PT / geo.height;
+    let w = clamp(g.orig.w + dx, minW, 1 - f.x);
+    let h = clamp(g.orig.h + dy, minH, 1 - f.y);
+    if (f.type !== 'text' && f.type !== 'name' && f.type !== 'date') {
+      // Signatures, initials and checkboxes keep their shape.
+      const aspect = (g.orig.w * geo.width) / (g.orig.h * geo.height);
+      h = (w * geo.width) / aspect / geo.height;
+      if (h > 1 - f.y) {
+        h = 1 - f.y;
+        w = (h * geo.height * aspect) / geo.width;
+      }
+    }
+    f.w = w;
+    f.h = h;
+  }
+
+  @HostListener('window:pointerup', ['$event'])
+  @HostListener('window:pointercancel', ['$event'])
+  onPointerUp(event: PointerEvent) {
+    const g = this.gesture;
+    if (!g || event.pointerId !== g.pointerId) return;
+    this.gesture = null;
+    if (g.moved) {
+      this.history.push(g.snapshot);
+    } else if (g.kind === 'move' && g.field.type === 'checkbox' && event.type === 'pointerup') {
+      this.pushHistory();
+      g.field.checked = !g.field.checked;
+    }
+  }
+
+  onTextInput(event: Event, field: Field) {
+    // Grow the box downwards as lines are added, like DocuSign's text fields.
+    const el = event.target as HTMLTextAreaElement;
+    if (el.scrollHeight > el.clientHeight + 1) {
+      const pageH = el.closest('.page')!.getBoundingClientRect().height;
+      field.h = Math.min(1 - field.y, field.h + (el.scrollHeight - el.clientHeight) / pageH);
+    }
+    if (field.type === 'name') this.fullName = field.value;
+  }
+
+  changeFontSize(field: Field, delta: number) {
+    const size = clamp(field.fontSize + delta, 6, 48);
+    if (size === field.fontSize) return;
+    this.pushHistory();
+    const geo = this.geometry[field.page];
+    const minH = (size * LINE_HEIGHT + 2 * TEXT_PADDING) / geo.height;
+    field.fontSize = size;
+    field.h = Math.min(Math.max(field.h, minH), 1 - field.y);
+  }
+
+  deleteField(field: Field) {
+    this.pushHistory();
+    this.fields = this.fields.filter(f => f.id !== field.id);
+    if (this.selectedId === field.id) this.selectedId = null;
+  }
+
+  copyToAllPages(field: Field) {
+    const copies = this.pages
+      .filter(p => p.index !== field.page)
+      .map(p => ({
+        ...field,
+        id: this.nextId++,
+        page: p.index,
+        x: Math.min(field.x, 1 - field.w),
+        y: Math.min(field.y, 1 - field.h),
+      }));
+    if (!copies.length) return;
+    this.pushHistory();
+    this.fields = [...this.fields, ...copies];
+  }
+
+  private pushHistory() {
+    this.history.push(JSON.stringify(this.fields));
+    if (this.history.length > 100) this.history.shift();
+  }
+
+  undo() {
+    const snapshot = this.history.pop();
+    if (snapshot === undefined) return;
+    this.fields = JSON.parse(snapshot);
+    this.selectedId = null;
+    this.gesture = null;
+  }
+
+  @HostListener('window:keydown', ['$event'])
+  onKeyDown(event: KeyboardEvent) {
+    if (this.dialog) return;
+    const target = event.target as HTMLElement;
+    const typing = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+
+    if (event.key === 'Escape') {
+      if (typing) target.blur();
+      this.tool = null;
+      this.selectedId = null;
+      return;
+    }
+    if (typing || !this.pages.length) return;
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      this.undo();
+      return;
+    }
+
+    const f = this.selected;
+    if (!f) return;
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault();
+      this.deleteField(f);
+      return;
+    }
+
+    const step = event.shiftKey ? 10 : 1;
+    const nudge: Record<string, [number, number]> = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    };
+    const delta = nudge[event.key];
+    if (delta) {
+      event.preventDefault();
+      this.pushHistory();
+      const geo = this.geometry[f.page];
+      f.x = clamp(f.x + delta[0] / geo.width, 0, 1 - f.w);
+      f.y = clamp(f.y + delta[1] / geo.height, 0, 1 - f.h);
+    }
+  }
+
+  // --- Saving ---
+
+  get emptyTextFields(): number {
+    return this.fields.filter(f => isTextField(f.type) && !f.value.trim()).length;
+  }
+
+  async download() {
+    if (!this.pdfBytes || this.saving) return;
+    const empty = this.emptyTextFields;
+    if (empty && !confirm(`${empty} text field${empty > 1 ? 's are' : ' is'} empty and will be left out. Download anyway?`)) {
+      return;
+    }
+
+    this.saving = true;
+    this.error = '';
+    try {
+      const bytes = await stampFields(this.pdfBytes, this.fields, this.geometry);
+      const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = this.fileName || 'document.pdf';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      this.error = `Could not save the PDF: ${e?.message ?? e}`;
+    } finally {
+      this.saving = false;
+    }
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+/** Default size for a signature or initials image, within the field definition's bounds. */
+function fitMark(aspect: number, def: FieldDef): { w: number; h: number } {
+  let h = def.h;
+  let w = h * aspect;
+  if (w > def.w) {
+    w = def.w;
+    h = w / aspect;
+  }
+  return { w, h };
 }

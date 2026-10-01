@@ -1,0 +1,79 @@
+<div class="backdrop" (pointerdown)="$event.target === $event.currentTarget && cancel.emit()">
+  <div class="dialog" role="dialog" aria-modal="true" [attr.aria-label]="title">
+    <header>
+      <h2>{{ title }}</h2>
+      <button class="icon-btn" (click)="cancel.emit()" aria-label="Close">✕</button>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" [class.active]="tab === 'type'" (click)="tab = 'type'">Type</button>
+      <button role="tab" [class.active]="tab === 'draw'" (click)="tab = 'draw'">Draw</button>
+      <button role="tab" [class.active]="tab === 'upload'" (click)="tab = 'upload'">Upload</button>
+    </nav>
+
+    <div class="body">
+      @if (tab !== 'upload') {
+        <div class="inks" aria-label="Ink color">
+          @for (c of inkColors; track c) {
+            <button class="ink" [class.active]="ink === c" [style.background]="c"
+                    (click)="setInk(c)" [attr.aria-label]="'Ink ' + c"></button>
+          }
+        </div>
+      }
+
+      @switch (tab) {
+        @case ('type') {
+          <label class="field-label" for="typed">{{ kind === 'signature' ? 'Full name' : 'Initials' }}</label>
+          <input id="typed" class="text-input" [(ngModel)]="typed" autocomplete="name"
+                 (keydown.enter)="submit()" autofocus />
+          <div class="styles" role="radiogroup" aria-label="Style">
+            @for (f of fonts; track f) {
+              <button class="style" role="radio" [attr.aria-checked]="font === f" [class.active]="font === f"
+                      (click)="font = f" [style.font-family]="'&quot;' + f + '&quot;'" [style.color]="ink">
+                {{ typed || (kind === 'signature' ? 'Your Name' : 'YN') }}
+              </button>
+            }
+          </div>
+        }
+        @case ('draw') {
+          <div class="pad-wrap">
+            <canvas #pad class="pad"></canvas>
+            <span class="pad-line" aria-hidden="true"></span>
+            @if (drawnEmpty) {
+              <span class="pad-hint">Draw your {{ kind }} here</span>
+            }
+          </div>
+          <button class="link-btn" (click)="clearPad()">Clear</button>
+        }
+        @case ('upload') {
+          <label class="dropzone">
+            @if (uploaded) {
+              <img [src]="uploaded" alt="Uploaded {{ kind }}" />
+            } @else {
+              <span>Choose an image of your {{ kind }}</span>
+              <small>A photo or scan on white paper works best.</small>
+            }
+            <input type="file" accept="image/*" (change)="onUpload($event)" hidden />
+          </label>
+          @if (uploaded) {
+            <button class="link-btn" (click)="uploaded = null">Remove</button>
+          }
+        }
+      }
+
+      @if (error) {
+        <p class="error">{{ error }}</p>
+      }
+    </div>
+
+    <footer>
+      <p class="legal">
+        By adopting, you agree this {{ kind }} is your electronic representation for use on this document.
+      </p>
+      <div class="actions">
+        <button class="btn" (click)="cancel.emit()">Cancel</button>
+        <button class="btn btn-primary" [disabled]="!canAdopt" (click)="submit()">Adopt and sign</button>
+      </div>
+    </footer>
+  </div>
+</div>

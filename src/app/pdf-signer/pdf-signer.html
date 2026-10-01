@@ -1,69 +1,151 @@
-<div class="container">
-  <div class="left-panel">
-    <h2>PDF Signer</h2>
+<div class="app" (dragover)="onDragOver($event)" (dragleave)="dragOver = false" (drop)="onDrop($event)">
+  <header class="topbar">
+    <span class="brand">PDF Sign</span>
+    @if (pages.length) {
+      <span class="file-name" [title]="fileName">{{ fileName }}</span>
+    }
+    <span class="spacer"></span>
 
-    <div class="upload-section">
-      <label class="label">Upload PDF:</label>
-      <input type="file" (change)="onFileSelected($event)" accept="application/pdf" />
-    </div>
-
-    <div *ngIf="pdfSrc && totalPages > 1" class="page-selector">
-      <label class="label">Select Page:</label>
-      <select [(ngModel)]="sigPage" (change)="centerSignature()">
-        <option *ngFor="let p of pageNumbers" [value]="p">{{ p }}</option>
-      </select>
-    </div>
-
-    <hr class="divider" />
-
-    <div *ngIf="pdfSrc" class="signature-section">
-      <h3>Draw Signature</h3>
-      <canvas #sigPad width="400" height="150" class="signature-canvas"></canvas>
-      <div class="button-group">
-        <button class="btn" (click)="clearSignature()">Clear Canvas</button>
-        <button class="btn btn-primary" (click)="useCanvasSignature()">Use This Signature</button>
+    @if (pages.length) {
+      <div class="zoom" aria-label="Zoom">
+        <button class="icon-btn" (click)="zoomBy(1 / 1.2)" title="Zoom out" aria-label="Zoom out">−</button>
+        <button class="zoom-value" (click)="fitWidth()" title="Fit to width">{{ zoomPercent }}%</button>
+        <button class="icon-btn" (click)="zoomBy(1.2)" title="Zoom in" aria-label="Zoom in">+</button>
       </div>
+      <button class="btn" (click)="undo()" [disabled]="!canUndo" title="Undo (Ctrl+Z)">Undo</button>
+    }
+    <label class="btn">
+      {{ pages.length ? 'Open another' : 'Open PDF' }}
+      <input type="file" accept="application/pdf,.pdf" (change)="onFileInput($event)" hidden />
+    </label>
+    @if (pages.length) {
+      <button class="btn btn-primary" (click)="download()" [disabled]="saving">
+        {{ saving ? 'Saving…' : 'Download' }}
+      </button>
+    }
+  </header>
 
-      <h3>Or Upload Signature</h3>
-      <input type="file" accept="image/*" (change)="onSignatureUpload($event)" />
+  @if (error) {
+    <div class="banner" role="alert">
+      {{ error }}
+      <button class="icon-btn" (click)="error = ''" aria-label="Dismiss">✕</button>
     </div>
+  }
 
-    <div *ngIf="pdfSrc" class="download-btn">
-      <button class="btn btn-success" (click)="applySignature()">Apply & Download PDF</button>
-    </div>
-  </div>
+  @if (!pages.length) {
+    <main class="empty" [class.drag-over]="dragOver">
+      <label class="drop-card">
+        @if (loading) {
+          <strong>Opening…</strong>
+        } @else {
+          <span class="drop-icon" aria-hidden="true">⇪</span>
+          <strong>Drop a PDF here</strong>
+          <span>or</span>
+          <span class="btn btn-primary">Choose a file</span>
+          <small>Your document never leaves your browser.</small>
+        }
+        <input type="file" accept="application/pdf,.pdf" (change)="onFileInput($event)" hidden />
+      </label>
+    </main>
+  } @else {
+    <main class="workspace">
+      <aside class="palette">
+        <h3>Fields</h3>
+        <p class="hint">
+          @if (tool) {
+            Click on the document to place the {{ defOf(tool).label.toLowerCase() }}.
+          } @else {
+            Pick a field, then click on the document.
+          }
+        </p>
+        <div class="tools">
+          @for (d of defs; track d.type) {
+            <button class="tool" [class.active]="tool === d.type" [attr.data-type]="d.type"
+                    (click)="selectTool(d.type)" [attr.aria-pressed]="tool === d.type">
+              <span class="tool-icon" aria-hidden="true">{{ d.icon }}</span>
+              {{ d.label }}
+            </button>
+          }
+        </div>
 
-  <div class="pdf-container" #pdfContainer *ngIf="pdfSrc" style="position: relative;">
-    <pdf-viewer
-      [src]="pdfSrc"
-      [render-text]="true"
-      [(page)]="sigPage"  [show-all]="true"
-      style="display:block; width:100%; height:100%;"
-      (after-load-complete)="onPdfLoad($event)">
-    </pdf-viewer>
-  
-    <ng-container *ngIf="signatureDisplayUrl">
-      <img [src]="signatureDisplayUrl"
-            class="signature"
-            [ngStyle]="{
-              'position': 'absolute', 
-              'left.px': sigPosX,      
-              'top.px': sigPosY,     
-              'width.px': sigWidth,
-              'height.px': sigHeight
-            }"
-            (mousedown)="startDrag($event)"
-            (touchstart)="startDrag($event)" />
-  
-      <div class="resize-handle"
-            [ngStyle]="{
-              'position': 'absolute',
-              'left.px': sigPosX + sigWidth,
-              'top.px': sigPosY + sigHeight
-            }"
-            (mousedown)="startResize($event)"
-            (touchstart)="startResize($event)">
+        <h3>Adopted</h3>
+        <div class="marks">
+          <button class="mark" (click)="openDialog('signature')" title="Change signature">
+            @if (signature) {
+              <img [src]="signature.dataUrl" alt="Your signature" />
+            } @else {
+              <span>Set signature</span>
+            }
+          </button>
+          <button class="mark mark-small" (click)="openDialog('initials')" title="Change initials">
+            @if (initials) {
+              <img [src]="initials.dataUrl" alt="Your initials" />
+            } @else {
+              <span>Set initials</span>
+            }
+          </button>
+        </div>
+      </aside>
+
+      <div class="scroller" #scroller [class.drag-over]="dragOver">
+        @for (p of pages; track p.index) {
+          <div class="page" [attr.data-index]="p.index" [class.placing]="tool"
+               [style.width.px]="p.width * zoom" [style.height.px]="p.height * zoom"
+               (pointerdown)="onPagePointerDown($event, p.index)">
+            <div class="canvas-holder" [attr.data-page]="p.index"></div>
+
+            @for (f of fieldsOn(p.index); track f.id) {
+              <div class="field" [attr.data-field]="f.id" [attr.data-type]="f.type"
+                   [class.selected]="f.id === selectedId"
+                   [style.left.%]="f.x * 100" [style.top.%]="f.y * 100"
+                   [style.width.%]="f.w * 100" [style.height.%]="f.h * 100"
+                   (pointerdown)="onFieldPointerDown($event, f)">
+                @if (isImageField(f.type)) {
+                  <img [src]="f.value" [alt]="f.type" draggable="false" />
+                } @else if (isTextField(f.type)) {
+                  <textarea [(ngModel)]="f.value" (input)="onTextInput($event, f)" spellcheck="false"
+                            [placeholder]="defOf(f.type).label" [attr.aria-label]="defOf(f.type).label"
+                            [style.font-size.px]="f.fontSize * zoom" [style.line-height]="lineHeight"
+                            [style.padding.px]="textPadding * zoom" [style.font-family]="fontStack"></textarea>
+                } @else {
+                  <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+                    @if (f.checked) {
+                      <polyline [attr.points]="checkPoints" fill="none" stroke="#000" stroke-width="0.12"
+                                stroke-linecap="round" stroke-linejoin="round" />
+                    }
+                  </svg>
+                }
+
+                @if (f.id === selectedId) {
+                  <div class="field-menu" (pointerdown)="$event.stopPropagation()">
+                    <button class="grip" (pointerdown)="onHandlePointerDown($event, f, 'move')"
+                            title="Drag to move" aria-label="Move">⠿</button>
+                    @if (isTextField(f.type)) {
+                      <button (click)="changeFontSize(f, -1)" title="Smaller text" aria-label="Smaller text">A−</button>
+                      <span class="font-size">{{ f.fontSize }}</span>
+                      <button (click)="changeFontSize(f, 1)" title="Larger text" aria-label="Larger text">A+</button>
+                    }
+                    @if (f.type === 'signature' || f.type === 'initials') {
+                      <button (click)="openDialog(f.type)" title="Change">Change</button>
+                    }
+                    @if (pages.length > 1) {
+                      <button (click)="copyToAllPages(f)" title="Copy to the same spot on every page">All pages</button>
+                    }
+                    <button class="danger" (click)="deleteField(f)" title="Delete (Del)" aria-label="Delete">🗑</button>
+                  </div>
+                  <span class="resize-handle" (pointerdown)="onHandlePointerDown($event, f, 'resize')"
+                        title="Drag to resize"></span>
+                }
+              </div>
+            }
+          </div>
+        }
       </div>
-    </ng-container>
-  </div>
+    </main>
+  }
+
+  @if (dialog) {
+    <app-signature-dialog [kind]="dialog.kind" [name]="fullName"
+                          (adopt)="onAdopt($event)" (cancel)="dialog = null" />
+  }
 </div>

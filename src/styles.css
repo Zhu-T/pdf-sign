@@ -1,1 +1,96 @@
-/* You can add global styles to this file, and also import other style files */
+:root {
+  --surface: #ffffff;
+  --canvas: #e8eaee;
+  --border: #d5d9e0;
+  --text: #1f2430;
+  --muted: #646b78;
+  --accent: #3b5bdb;
+  --accent-soft: #e6ebff;
+  --danger: #c92a2a;
+  --danger-soft: #ffe3e3;
+  --field-sign: #ffe58a;
+  --field-sign-edge: #e0a800;
+  --field-text: rgb(186 205 255 / 0.35);
+  --field-text-edge: #7b93db;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #2f4bc0;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: rgb(0 0 0 / 0.06);
+}
+
+.text-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 16px;
+}
+
+.text-input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
