@@ -1,4 +1,4 @@
-<div class="backdrop" (pointerdown)="$event.target === $event.currentTarget && cancel.emit()">
+<div class="backdrop" (pointerdown)="onBackdropPointerDown($event)">
   <div class="dialog" role="dialog" aria-modal="true" [attr.aria-label]="title">
     <header>
       <h2>{{ title }}</h2>
@@ -24,8 +24,8 @@
       @switch (tab) {
         @case ('type') {
           <label class="field-label" for="typed">{{ kind === 'signature' ? 'Full name' : 'Initials' }}</label>
-          <input id="typed" class="text-input" [(ngModel)]="typed" autocomplete="name"
-                 (keydown.enter)="submit()" autofocus />
+          <input #typedInput id="typed" class="text-input" [(ngModel)]="typed" autocomplete="name"
+                 (keydown.enter)="submit()" />
           <div class="styles" role="radiogroup" aria-label="Style">
             @for (f of fonts; track f) {
               <button class="style" role="radio" [attr.aria-checked]="font === f" [class.active]="font === f"
