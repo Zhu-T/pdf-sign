@@ -1,65 +1,35 @@
-# PdfSignApp
+# PDF Sign
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 20.3.3.
+Fill out and sign PDFs in the browser, DocuSign-style. Nothing is uploaded: the PDF is opened, edited and saved entirely on your machine.
 
-## Development server
+## Features
 
-To start a local development server, run:
+- **Open** a PDF with the file picker or by dropping it onto the window.
+- **Fields**: pick a field from the sidebar, then click anywhere on any page to place it.
+  - **Signature** and **Initials**: adopt them once by typing your name (four script styles), drawing (black or blue ink) or uploading an image (white backgrounds are removed). "Change" swaps every placed copy.
+  - **Full name**, **Date signed** (prefilled with today's date) and **Text**: multi-line text that wraps and grows as you type, with adjustable font size.
+  - **Checkbox**: click to toggle.
+- **Edit**: drag to move, use the corner handle to resize, "All pages" to copy a field to the same spot on every page (handy for initials), and Delete to remove one.
+- **Keyboard**: arrow keys nudge the selected field (Shift for bigger steps), Delete removes it, Ctrl/Cmd+Z undoes, Esc cancels.
+- **Zoom** in and out, or click the percentage to fit the page width.
+- **Download** writes the fields into the PDF (flattened), keeping the original file name. Rotated pages and non-Latin text are handled.
 
-```bash
-ng serve
-```
-
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
-
-## Code scaffolding
-
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
-
-```bash
-ng generate component component-name
-```
-
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+## Development
 
 ```bash
-ng generate --help
+npm install
+npm start          # http://localhost:4200
+npm run build
+npm test
 ```
 
-## Building
+Built with Angular, [pdf.js](https://mozilla.github.io/pdf.js/) for rendering, [pdf-lib](https://pdf-lib.js.org/) for writing the PDF and [signature_pad](https://github.com/szimek/signature_pad) for drawing.
 
-To build the project run:
+Code layout (`src/app/pdf-signer/`):
 
-```bash
-ng build
-```
-
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
-
-## Running unit tests
-
-To execute unit tests with the [Karma](https://karma-runner.github.io) test runner, use the following command:
-
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
-
-```bash
-ng e2e
-```
-
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
-
-## Pages Deploy
-```bash
-ng build --configuration=production --base-href "https://Zhu-T.github.io/pdf-sign/"
-npx angular-cli-ghpages --dir=dist/pdf-sign/browser
-```
+| File | Purpose |
+| --- | --- |
+| `pdf-signer.*` | Main screen: page rendering, placing and editing fields, download |
+| `signature-dialog/` | "Adopt your signature" dialog (type / draw / upload) |
+| `fields.ts` | Field model, default sizes, shared text metrics |
+| `pdf-export.ts` | Stamps fields onto the PDF with pdf-lib |
