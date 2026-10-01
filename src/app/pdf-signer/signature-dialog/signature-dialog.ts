@@ -52,6 +52,11 @@ export class SignatureDialog implements OnInit, OnDestroy {
   private padEl?: HTMLCanvasElement;
   private resizeObserver?: ResizeObserver;
 
+  @ViewChild('typedInput') set typedInput(ref: ElementRef<HTMLInputElement> | undefined) {
+    // The autofocus attribute is ignored for elements added after page load.
+    ref?.nativeElement.focus();
+  }
+
   @ViewChild('pad') set padCanvas(ref: ElementRef<HTMLCanvasElement> | undefined) {
     this.pad?.off();
     this.resizeObserver?.disconnect();
@@ -82,6 +87,11 @@ export class SignatureDialog implements OnInit, OnDestroy {
     if (this.tab === 'type') return this.typed.trim().length > 0;
     if (this.tab === 'draw') return !this.drawnEmpty;
     return !!this.uploaded;
+  }
+
+  onBackdropPointerDown(event: PointerEvent) {
+    // Must not return false: Angular would call preventDefault and stop inputs taking focus.
+    if (event.target === event.currentTarget) this.cancel.emit();
   }
 
   setInk(color: string) {
